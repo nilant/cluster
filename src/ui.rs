@@ -101,9 +101,13 @@ fn progress(f: &mut Frame, app: &App, area: Rect) {
     let ratio = if app.total == 0 { 0.0 } else { app.done as f64 / app.total as f64 };
     f.render_widget(
         Gauge::default()
-            .block(Block::bordered().title(" Progress "))
+            .block(
+                Block::bordered()
+                    .title(" Progress ")
+                    .title(Line::from(format!(" {} non-zero exit ", app.failed)).right_aligned()),
+            )
             .ratio(ratio.min(1.0))
-            .label(format!("{}/{}  ({} non-zero exit)", app.done, app.total, app.failed)),
+            .label(format!("{}/{}", app.done, app.total)),
         area,
     );
 }

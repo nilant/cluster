@@ -39,12 +39,20 @@ pub fn parse_hosts(text: &str) -> Result<Vec<String>, Vec<String>> {
 pub fn parse_probe(out: &str, threshold: f64) -> Option<Status> {
     let mut lines = out.lines();
     let load: f64 = lines.next()?.split_whitespace().next()?.parse().ok()?;
-    let top = lines.next().unwrap_or("").trim().to_string();
+    let top = format_top(lines.next().unwrap_or(""));
     Some(if load < threshold {
         Status::Idle { load, top }
     } else {
         Status::Busy { load, top }
     })
+}
+
+/// "99.9 solver" / "100 solver" -> CPU% right-aligned in 4 columns so the process names line up.
+fn format_top(line: &str) -> String {
+    match line.trim().split_once(char::is_whitespace) {
+        Some((cpu, name)) => format!("{cpu:>4} {}", name.trim()),
+        None => line.trim().to_string(),
+    }
 }
 
 pub fn target(user: &Option<String>, host: &str) -> String {
@@ -90,6 +98,14 @@ mod tests {
     #[test]
     fn hosts_trim_and_skip_blank() {
         assert_eq!(parse_hosts("1.1.1.1\n\n# c\n2.2.2.2\t\n  \n::1\n").unwrap(), vec!["1.1.1.1", "2.2.2.2", "::1"]);
+    }
+
+    #[test]
+    fn top_column_is_aligned() {
+        assert_eq!(format_top(" 100 solver\n"), " 100 solver");
+        assert_eq!(format_top("99.9 solver"), "99.9 solver");
+        assert_eq!(format_top("  3.9 sway"), " 3.9 sway");
+        assert_eq!(format_top(""), "");
     }
 
     #[test]
