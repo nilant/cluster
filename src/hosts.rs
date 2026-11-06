@@ -1,12 +1,21 @@
-use std::process::Stdio;
+use anyhow::{Result, anyhow, bail};
+use std::path::Path;
+use std::process::{Output, Stdio};
 use tokio::process::Command;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum Status {
+    #[default]
     Unknown,
-    Idle { load: f64, top: String },
-    Busy { load: f64, top: String },
-    Down(String),
+    Idle {
+        load: f64,
+        top: String,
+    },
+    Busy {
+        load: f64,
+        top: String,
+    },
+    Down,
 }
 
 impl Status {
@@ -15,13 +24,32 @@ impl Status {
     }
 }
 
-/// Parses a hosts file: one IP address per line, blank lines and `#` comments ignored.
+/// Reads the hosts file (`./hosts.txt` if `path` is None) and validates it.
+pub fn load(path: Option<&Path>) -> Result<Vec<String>> {
+    let p = path.unwrap_or(Path::new("hosts.txt"));
+    if !p.is_file() {
+        match path {
+            Some(_) => bail!("hosts file not found: {}", p.display()),
+            None => bail!(
+                "no hosts file specified and no hosts.txt found in the current directory ({}).\n\
+                 Pass one with --hosts <file> (one address per line) or run from a directory containing hosts.txt.",
+                std::env::current_dir()?.display()
+            ),
+        }
+    }
+    let ips = parse_hosts(&std::fs::read_to_string(p)?)
+        .map_err(|e| anyhow!("malformed hosts file {}:\n  {}", p.display(), e.join("\n  ")))?;
+    if ips.is_empty() {
+        bail!("no hosts in {}", p.display());
+    }
+    Ok(ips)
+}
+
+/// One IP address per line, blank lines and `#` comments ignored.
 /// Returns every problem found (with line numbers) if the file is malformed.
-pub fn parse_hosts(text: &str) -> Result<Vec<String>, Vec<String>> {
-    let mut hosts: Vec<String> = Vec::new();
-    let mut errors = Vec::new();
-    for (i, line) in text.lines().enumerate() {
-        let l = line.trim();
+fn parse_hosts(text: &str) -> Result<Vec<String>, Vec<String>> {
+    let (mut hosts, mut errors) = (Vec::<String>::new(), Vec::new());
+    for (i, l) in text.lines().map(str::trim).enumerate() {
         if l.is_empty() || l.starts_with('#') {
             continue;
         }
@@ -34,60 +62,65 @@ pub fn parse_hosts(text: &str) -> Result<Vec<String>, Vec<String>> {
     if errors.is_empty() { Ok(hosts) } else { Err(errors) }
 }
 
-/// Parses output of: cat /proc/loadavg; ps top line.
+/// Output of the probe: `/proc/loadavg`, then the busiest process that is not the probe itself.
+const PROBE: &str =
+    r#"cat /proc/loadavg; ps -eo pcpu,comm --sort=-pcpu | awk 'NR>1 && $2!="ps" && $2!="awk" {print; exit}'"#;
+
 /// Idle if the 1-minute load average (not divided by the core count) is below `threshold`.
-pub fn parse_probe(out: &str, threshold: f64) -> Option<Status> {
+fn parse_probe(out: &str, threshold: f64) -> Option<Status> {
     let mut lines = out.lines();
     let load: f64 = lines.next()?.split_whitespace().next()?.parse().ok()?;
-    let top = format_top(lines.next().unwrap_or(""));
-    Some(if load < threshold {
-        Status::Idle { load, top }
-    } else {
-        Status::Busy { load, top }
-    })
-}
-
-/// "99.9 solver" / "100 solver" -> CPU% right-aligned in 4 columns so the process names line up.
-fn format_top(line: &str) -> String {
-    match line.trim().split_once(char::is_whitespace) {
+    // CPU% right-aligned in 4 columns ("99.9", " 100") so the process names line up
+    let top = match lines.next().unwrap_or("").trim().split_once(char::is_whitespace) {
         Some((cpu, name)) => format!("{cpu:>4} {}", name.trim()),
-        None => line.trim().to_string(),
+        None => String::new(),
+    };
+    Some(if load < threshold { Status::Idle { load, top } } else { Status::Busy { load, top } })
+}
+
+/// Runs ssh/scp non-interactively with the same options (and user, if given).
+#[derive(Clone)]
+pub struct Ssh(Vec<String>);
+
+impl Ssh {
+    pub fn new(user: Option<&str>) -> Self {
+        let mut opts: Vec<String> =
+            ["BatchMode=yes", "ConnectTimeout=5", "StrictHostKeyChecking=accept-new"].map(String::from).into();
+        opts.extend(user.map(|u| format!("User={u}")));
+        Self(opts)
     }
-}
 
-pub fn target(user: &Option<String>, host: &str) -> String {
-    match user {
-        Some(u) => format!("{u}@{host}"),
-        None => host.to_string(),
+    fn command(&self, program: &str) -> Command {
+        let mut c = Command::new(program);
+        c.args(self.0.iter().flat_map(|o| ["-o", o])).stdin(Stdio::null()).kill_on_drop(true);
+        c
     }
-}
 
-pub fn ssh_cmd(target: &str) -> Command {
-    let mut c = Command::new("ssh");
-    c.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new", target]);
-    c.kill_on_drop(true);
-    c
-}
+    /// Runs `cmd` on `host`. Fails only if ssh itself fails (exit status 255).
+    pub async fn run(&self, host: &str, cmd: &str) -> Result<Output> {
+        let o = self.command("ssh").arg(host).arg(cmd).output().await?;
+        if o.status.code() == Some(255) {
+            bail!("ssh: {}", String::from_utf8_lossy(&o.stderr).trim());
+        }
+        Ok(o)
+    }
 
-pub async fn probe(user: Option<String>, host: String, threshold: f64) -> Status {
-    // the probe's own processes (ps, awk) are excluded from the "top process"
-    let remote = r#"cat /proc/loadavg; ps -eo pcpu,comm --sort=-pcpu | awk 'NR>1 && $2!="ps" && $2!="awk" {print; exit}'"#;
-    let out = ssh_cmd(&target(&user, &host))
-        .arg(remote)
-        .stdin(Stdio::null())
-        .output()
-        .await;
-    match out {
-        Ok(o) if o.status.success() => parse_probe(&String::from_utf8_lossy(&o.stdout), threshold)
-            .unwrap_or(Status::Down("bad probe output".into())),
-        Ok(o) => Status::Down(
-            String::from_utf8_lossy(&o.stderr)
-                .lines()
-                .last()
-                .unwrap_or("ssh failed")
-                .to_string(),
-        ),
-        Err(e) => Status::Down(e.to_string()),
+    pub async fn copy(&self, local: &Path, host: &str, remote: &str) -> Result<()> {
+        // brackets keep IPv6 addresses (which contain ':') apart from the path
+        let o = self.command("scp").arg("-q").arg(local).arg(format!("[{host}]:{remote}")).output().await?;
+        if !o.status.success() {
+            bail!("scp: {}", String::from_utf8_lossy(&o.stderr).trim());
+        }
+        Ok(())
+    }
+
+    pub async fn probe(&self, host: &str, threshold: f64) -> Status {
+        match self.run(host, PROBE).await {
+            Ok(o) if o.status.success() => {
+                parse_probe(&String::from_utf8_lossy(&o.stdout), threshold).unwrap_or(Status::Down)
+            }
+            _ => Status::Down,
+        }
     }
 }
 
@@ -96,20 +129,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hosts_trim_and_skip_blank() {
-        assert_eq!(parse_hosts("1.1.1.1\n\n# c\n2.2.2.2\t\n  \n::1\n").unwrap(), vec!["1.1.1.1", "2.2.2.2", "::1"]);
-    }
-
-    #[test]
-    fn top_column_is_aligned() {
-        assert_eq!(format_top(" 100 solver\n"), " 100 solver");
-        assert_eq!(format_top("99.9 solver"), "99.9 solver");
-        assert_eq!(format_top("  3.9 sway"), " 3.9 sway");
-        assert_eq!(format_top(""), "");
-    }
-
-    #[test]
-    fn hosts_malformed() {
+    fn hosts_file() {
+        assert_eq!(parse_hosts("1.1.1.1\n\n# c\n2.2.2.2\t\n  \n::1\n").unwrap(), ["1.1.1.1", "2.2.2.2", "::1"]);
         let e = parse_hosts("1.1.1.1\n192.168.1.300\nfoo\n1.1.1.1\n").unwrap_err();
         assert_eq!(e.len(), 3);
         assert!(e[0].starts_with("line 2:"));
@@ -117,13 +138,13 @@ mod tests {
     }
 
     #[test]
-    fn probe_idle_and_busy() {
-        let idle = parse_probe("0.05 0.1 0.1 1/200 99\n 1.0 sshd\n", 0.5).unwrap();
-        assert!(idle.is_idle());
+    fn probe_idle_busy_and_top_column() {
+        let idle = parse_probe("0.05 0.1 0.1 1/200 99\n  3.9 sshd\n", 0.5).unwrap();
+        assert_eq!(idle, Status::Idle { load: 0.05, top: " 3.9 sshd".into() });
         // one fully used core is busy no matter how many cores the machine has
-        let busy = parse_probe("1.00 1.0 1.0 2/200 99\n 99.9 solver\n", 0.5).unwrap();
-        assert!(!busy.is_idle());
-        assert!(!parse_probe("0.50 0.1 0.1 1/200 99\n 50.0 x\n", 0.5).unwrap().is_idle());
+        let busy = parse_probe("1.00 1.0 1.0 2/200 99\n 100 solver\n", 0.5).unwrap();
+        assert_eq!(busy, Status::Busy { load: 1.0, top: " 100 solver".into() });
+        assert!(!parse_probe("0.50 0.1 0.1 1/200 99\n99.9 x\n", 0.5).unwrap().is_idle());
         assert!(parse_probe("garbage", 0.5).is_none());
     }
 }

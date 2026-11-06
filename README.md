@@ -61,18 +61,18 @@ The screen has, from top to bottom: the **Hosts** table, the instances directory
 | `Tab` / `Shift-Tab` | anywhere | Move focus between table, directory and command |
 | `Enter` | anywhere | Start the run |
 | `↑` / `↓`, `PgUp` / `PgDn` | host table (also during a run) | Move the cursor and scroll |
-| `space` | host table | Select or deselect an idle host |
+| `space` | host table | Select an idle host, or deselect a host |
 | `a` | host table | Select all idle hosts |
 | `r` | host table | Probe all hosts again |
 | `q` | host table | Quit |
 | `q`, then `y` | during a run | Abort: kills the remote runs and removes the remote directories |
 | `Ctrl-C` | anywhere | Quit immediately |
 
-Host states: `IDLE`, `BUSY`, `DOWN` (unreachable, cannot be selected), and, during a run, `RUN` (with the current instance), `DONE` (no more work for that host) and `FAIL` (with the error). Probing pauses while a run is in progress and resumes when it ends, so you can start another batch right away.
+Host states: `IDLE`, `BUSY`, `DOWN` (unreachable, cannot be selected), and, during a run, `RUN` (with the current instance), `DONE` (no more work for that host) and `FAIL` (with the error). Hosts keep being probed during a run, so the other hosts stay up to date and you can start another batch as soon as a run ends.
 
 ## How it works
 
-- **Idle detection:** every few seconds each host is probed over ssh (`/proc/loadavg` and the top CPU process). A 1-minute load average below the threshold means idle.
+- **Idle detection:** every 5 seconds each host is probed over ssh (`/proc/loadavg` and the top CPU process). A 1-minute load average below the threshold means idle.
 - **Files:** the executable is copied once to `/tmp/cluster-<pid>/` on each selected host. For every instance, the file is copied there, the command runs, and the file is deleted. The remote directory is removed at the end.
 - **Instances:** the regular files directly inside the directory, sorted by name. Subdirectories and files starting with `.` are ignored, and the search is not recursive.
 - **Failures:** if a host fails at the ssh level (connection lost), its current instance goes back in the queue for another host and that host is dropped from the run. A command that exits with a non-zero status is not retried: it is counted in the progress bar as a non-zero exit and its output is still recorded.
@@ -107,4 +107,16 @@ The file is a JSON object with one `"instance": output` entry per line, where `i
 
 ```
 cargo test
+cargo fmt      # formatting settings are in rustfmt.toml
 ```
+
+Code layout:
+
+| File | Contents |
+| --- | --- |
+| `src/main.rs` | Command-line options and the terminal event loop |
+| `src/app.rs` | Application state, key handling, events from background tasks |
+| `src/app/ui.rs` | Drawing |
+| `src/hosts.rs` | Hosts file, ssh/scp wrapper, idle probe |
+| `src/scheduler.rs` | Batch runs: instance queue, one worker per host |
+| `src/results.rs` | JSON results file |
