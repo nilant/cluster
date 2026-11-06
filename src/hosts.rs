@@ -34,14 +34,13 @@ pub fn parse_hosts(text: &str) -> Result<Vec<String>, Vec<String>> {
     if errors.is_empty() { Ok(hosts) } else { Err(errors) }
 }
 
-/// Parses output of: cat /proc/loadavg; nproc; ps top line
+/// Parses output of: cat /proc/loadavg; ps top line.
+/// Idle if the 1-minute load average (not divided by the core count) is below `threshold`.
 pub fn parse_probe(out: &str, threshold: f64) -> Option<Status> {
     let mut lines = out.lines();
     let load: f64 = lines.next()?.split_whitespace().next()?.parse().ok()?;
-    let cores: f64 = lines.next()?.trim().parse().ok()?;
     let top = lines.next().unwrap_or("").trim().to_string();
-    let per_core = load / cores.max(1.0);
-    Some(if per_core < threshold {
+    Some(if load < threshold {
         Status::Idle { load, top }
     } else {
         Status::Busy { load, top }
@@ -63,7 +62,8 @@ pub fn ssh_cmd(target: &str) -> Command {
 }
 
 pub async fn probe(user: Option<String>, host: String, threshold: f64) -> Status {
-    let remote = "cat /proc/loadavg; nproc; ps -eo pcpu,comm --sort=-pcpu | sed -n 2p";
+    // the probe's own processes (ps, awk) are excluded from the "top process"
+    let remote = r#"cat /proc/loadavg; ps -eo pcpu,comm --sort=-pcpu | awk 'NR>1 && $2!="ps" && $2!="awk" {print; exit}'"#;
     let out = ssh_cmd(&target(&user, &host))
         .arg(remote)
         .stdin(Stdio::null())
@@ -102,10 +102,12 @@ mod tests {
 
     #[test]
     fn probe_idle_and_busy() {
-        let idle = parse_probe("0.05 0.1 0.1 1/200 99\n4\n 1.0 sshd\n", 0.25).unwrap();
+        let idle = parse_probe("0.05 0.1 0.1 1/200 99\n 1.0 sshd\n", 0.5).unwrap();
         assert!(idle.is_idle());
-        let busy = parse_probe("3.50 2.0 1.0 1/200 99\n4\n 99.0 solver\n", 0.25).unwrap();
+        // one fully used core is busy no matter how many cores the machine has
+        let busy = parse_probe("1.00 1.0 1.0 2/200 99\n 99.9 solver\n", 0.5).unwrap();
         assert!(!busy.is_idle());
-        assert!(parse_probe("garbage", 0.25).is_none());
+        assert!(!parse_probe("0.50 0.1 0.1 1/200 99\n 50.0 x\n", 0.5).unwrap().is_idle());
+        assert!(parse_probe("garbage", 0.5).is_none());
     }
 }

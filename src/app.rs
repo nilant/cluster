@@ -1,6 +1,7 @@
 use crate::hosts::Status;
 use crate::scheduler::Ev;
-use std::collections::HashMap;
+use ratatui::widgets::TableState;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 #[derive(PartialEq, Clone, Copy)]
@@ -40,8 +41,11 @@ pub struct App {
     pub failed: usize,
     pub current: HashMap<String, (String, Instant)>,
     pub failed_hosts: Vec<(String, String)>,
+    /// hosts whose worker ended normally in the current run
+    pub finished: HashSet<String>,
+    pub table_state: TableState,
     pub active_workers: usize,
-    pub csv_path: String,
+    pub results_path: String,
     pub confirm_abort: bool,
 }
 
@@ -63,8 +67,10 @@ impl App {
             failed: 0,
             current: HashMap::new(),
             failed_hosts: vec![],
+            finished: HashSet::new(),
+            table_state: TableState::default(),
             active_workers: 0,
-            csv_path: String::new(),
+            results_path: String::new(),
             confirm_abort: false,
         }
     }
@@ -99,7 +105,10 @@ impl App {
                 self.current.remove(&host);
                 self.failed_hosts.push((host, err));
             }
-            Ev::WorkerEnd => {
+            Ev::WorkerEnd { host } => {
+                if !self.failed_hosts.iter().any(|(h, _)| h == &host) {
+                    self.finished.insert(host);
+                }
                 self.active_workers = self.active_workers.saturating_sub(1);
                 if self.active_workers == 0 {
                     self.phase = Phase::Setup;
@@ -109,7 +118,7 @@ impl App {
                     }
                     self.message = Some(format!(
                         "Finished: {}/{} instances run ({} non-zero exit, {} host failures) -> {}",
-                        self.done, self.total, self.failed, self.failed_hosts.len(), self.csv_path
+                        self.done, self.total, self.failed, self.failed_hosts.len(), self.results_path
                     ));
                 }
             }

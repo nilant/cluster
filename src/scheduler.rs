@@ -13,7 +13,7 @@ pub enum Ev {
     Start { host: String, instance: String },
     Result { host: String, code: i32 },
     HostFailed { host: String, err: String },
-    WorkerEnd,
+    WorkerEnd { host: String },
 }
 
 pub struct Shared {
@@ -45,6 +45,11 @@ pub fn list_instances(dir: &Path) -> Result<VecDeque<PathBuf>> {
         .collect();
     v.sort();
     Ok(v.into())
+}
+
+/// Key of an instance in the results file: the file name without its extension.
+pub fn instance_key(path: &Path) -> String {
+    path.file_stem().unwrap_or_default().to_string_lossy().into_owned()
 }
 
 fn exe_name(exe: &Path) -> String {
@@ -88,7 +93,7 @@ pub async fn worker(sh: Arc<Shared>, host: String, tx: UnboundedSender<Ev>) {
         let _ = tx.send(Ev::HostFailed { host: host.clone(), err: e.to_string() });
     }
     cleanup(&sh, &host).await;
-    let _ = tx.send(Ev::WorkerEnd);
+    let _ = tx.send(Ev::WorkerEnd { host: host.clone() });
 }
 
 async fn work(sh: &Shared, host: &str, tx: &UnboundedSender<Ev>) -> Result<()> {
@@ -118,7 +123,7 @@ async fn run_one(sh: &Shared, tgt: &str, path: &Path, name: &str, host: &str, tx
     let exe = exe_name(&sh.exe);
     let cmd = format!("cd {} && ./{} {} {}; c=$?; rm -f {}; exit $c", sq(dir), sq(&exe), sh.flags, sq(name), sq(&rpath));
     let (code, stdout) = remote(tgt, &cmd).await?;
-    results::append(&mut sh.writer.lock().unwrap(), name, stdout.trim_end_matches(['\n', '\r']))?;
+    results::append(&mut sh.writer.lock().unwrap(), &instance_key(path), stdout.trim_end_matches(['\n', '\r']))?;
     let _ = tx.send(Ev::Result { host: host.into(), code });
     Ok(())
 }
@@ -126,6 +131,13 @@ async fn run_one(sh: &Shared, tgt: &str, path: &Path, name: &str, host: &str, tx
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_drops_extension() {
+        assert_eq!(instance_key(Path::new("d/012379a0-f981.txt")), "012379a0-f981");
+        assert_eq!(instance_key(Path::new("d/a.tar.gz")), "a.tar");
+        assert_eq!(instance_key(Path::new("d/noext")), "noext");
+    }
 
     #[test]
     fn quote() {

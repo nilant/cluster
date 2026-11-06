@@ -23,8 +23,8 @@ struct Args {
     /// SSH user (default: ssh config / current user)
     #[arg(long)]
     user: Option<String>,
-    /// Idle if load1 / cores is below this value
-    #[arg(long, default_value_t = 0.25)]
+    /// A host is idle if its 1-minute load average is below this value (0.5 = one core at 50%)
+    #[arg(long, default_value_t = 0.5)]
     idle_threshold: f64,
     /// Append to an existing results file instead of overwriting it
     #[arg(long)]
@@ -91,18 +91,23 @@ fn start(app: &mut App, args: &Args, tx: &UnboundedSender<Ev>) -> Result<(Arc<Sh
     }
     let dir_path = PathBuf::from(shellexpand(&dir));
     let queue = scheduler::list_instances(&dir_path)?;
+    let mut keys = std::collections::HashSet::new();
+    if let Some(p) = queue.iter().find(|p| !keys.insert(scheduler::instance_key(p))) {
+        bail!("instances share the same name once the extension is removed: {}", scheduler::instance_key(p));
+    }
     if queue.is_empty() {
         bail!("no instance files in {dir}");
     }
-    let csv = results_path(&args.results_dir, &dir_path, &exe);
-    let writer = results::open(&csv, !args.append)?;
-    app.csv_path = csv.display().to_string();
+    let out = results_path(&args.results_dir, &dir_path, &exe);
+    let writer = results::open(&out, !args.append)?;
+    app.results_path = out.display().to_string();
     app.total = queue.len();
     app.done = 0;
     app.failed = 0;
     app.message = None;
     app.current.clear();
     app.failed_hosts.clear();
+    app.finished.clear();
     let sh = Arc::new(Shared {
         user: args.user.clone(),
         exe,
@@ -117,7 +122,7 @@ fn start(app: &mut App, args: &Args, tx: &UnboundedSender<Ev>) -> Result<(Arc<Sh
     Ok((sh, handles))
 }
 
-/// results/<instances path>/<exe name>.csv  (e.g. data/test -> results/data/test/bottom_left.csv)
+/// results/<instances path>/<exe name>.json  (e.g. data/test -> results/data/test/bottom_left.json)
 /// Only normal path components are kept, so `./`, `..` and a leading `/` are dropped.
 fn results_path(results_dir: &Path, instances_dir: &Path, exe: &Path) -> PathBuf {
     let mut p = results_dir.to_path_buf();
@@ -125,7 +130,19 @@ fn results_path(results_dir: &Path, instances_dir: &Path, exe: &Path) -> PathBuf
         std::path::Component::Normal(n) => Some(n),
         _ => None,
     }));
-    p.join(format!("{}.csv", exe.file_name().unwrap().to_string_lossy()))
+    p.join(format!("{}.json", exe.file_name().unwrap().to_string_lossy()))
+}
+
+/// Moves the host cursor; the table scrolls to keep it visible.
+fn scroll(app: &mut App, code: KeyCode) {
+    let last = app.hosts.len() - 1;
+    app.cursor = match code {
+        KeyCode::Up => app.cursor.saturating_sub(1),
+        KeyCode::Down => (app.cursor + 1).min(last),
+        KeyCode::PageUp => app.cursor.saturating_sub(10),
+        KeyCode::PageDown => (app.cursor + 10).min(last),
+        _ => app.cursor,
+    };
 }
 
 fn shellexpand(s: &str) -> String {
@@ -150,7 +167,7 @@ async fn run(term: &mut ratatui::DefaultTerminal, args: Args, ips: Vec<String>) 
             last_tick = Instant::now();
             spawn_probes(&mut app, &args, &tx);
         }
-        term.draw(|f| ui::draw(f, &app))?;
+        term.draw(|f| ui::draw(f, &mut app))?;
 
         if !event::poll(Duration::from_millis(100))? {
             continue;
@@ -164,6 +181,7 @@ async fn run(term: &mut ratatui::DefaultTerminal, args: Args, ips: Vec<String>) 
         }
         if app.phase == Phase::Running {
             match (app.confirm_abort, k.code) {
+                (false, KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown) => scroll(&mut app, k.code),
                 (false, KeyCode::Char('q')) => app.confirm_abort = true,
                 (true, KeyCode::Char('y')) => {
                     if let Some((sh, handles)) = job.take() {
@@ -215,8 +233,7 @@ async fn run(term: &mut ratatui::DefaultTerminal, args: Args, ips: Vec<String>) 
             code => match app.focus {
                 Focus::Hosts => match code {
                     KeyCode::Char('q') => break,
-                    KeyCode::Up => app.cursor = app.cursor.saturating_sub(1),
-                    KeyCode::Down => app.cursor = (app.cursor + 1).min(app.hosts.len() - 1),
+                    KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => scroll(&mut app, code),
                     KeyCode::Char(' ') => {
                         let h = &mut app.hosts[app.cursor];
                         if h.status.is_idle() {
@@ -251,9 +268,9 @@ mod tests {
     fn results_path_mirrors_instances_path() {
         let exe = Path::new("/x/bottom_left");
         let r = Path::new("results");
-        let want = PathBuf::from("results/data/test/bottom_left.csv");
+        let want = PathBuf::from("results/data/test/bottom_left.json");
         assert_eq!(results_path(r, Path::new("data/test"), exe), want);
         assert_eq!(results_path(r, Path::new("./data/test/"), exe), want);
-        assert_eq!(results_path(r, Path::new("/abs/dir"), exe), PathBuf::from("results/abs/dir/bottom_left.csv"));
+        assert_eq!(results_path(r, Path::new("/abs/dir"), exe), PathBuf::from("results/abs/dir/bottom_left.json"));
     }
 }
