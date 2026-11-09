@@ -54,7 +54,7 @@ impl Job {
         let total = queue.len();
         let shared = Arc::new(Shared {
             ssh: Ssh::new(args.user.as_deref()),
-            writer: Mutex::new(Writer::open(results.clone(), args.append)?),
+            writer: Mutex::new(Writer::open(&results, args.append)?),
             flags: flags.trim().into(),
             remote_dir: format!("/tmp/cluster-{}", std::process::id()),
             queue: Mutex::new(queue),
@@ -84,11 +84,11 @@ impl Job {
     }
 }
 
-/// `<base>/<instances dir>/<exe>.json`, keeping only plain path components (no `/`, `.` or `..`).
+/// `<base>/<instances dir>/<exe>.txt`, keeping only plain path components (no `/`, `.` or `..`).
 fn results_path(base: &Path, dir: &Path, exe: &Path) -> PathBuf {
     let mut p = base.to_path_buf();
     p.extend(dir.components().filter(|c| matches!(c, Component::Normal(_))));
-    p.join(format!("{}.json", file_name(exe)))
+    p.join(format!("{}.txt", file_name(exe)))
 }
 
 fn expand_home(s: &str) -> PathBuf {
@@ -102,7 +102,7 @@ fn file_name(p: &Path) -> String {
     p.file_name().unwrap_or_default().to_string_lossy().into_owned()
 }
 
-/// Key of an instance in the results file: the file name without its extension.
+/// Name of an instance in the results file: the file name without its extension.
 fn instance_key(p: &Path) -> String {
     p.file_stem().unwrap_or_default().to_string_lossy().into_owned()
 }
@@ -183,8 +183,8 @@ mod tests {
         assert_eq!(instance_key(Path::new("d/a.tar.gz")), "a.tar");
         assert_eq!(instance_key(Path::new("d/noext")), "noext");
         let (r, exe) = (Path::new("results"), Path::new("/x/bottom_left"));
-        assert_eq!(results_path(r, Path::new("./data/test/"), exe), Path::new("results/data/test/bottom_left.json"));
-        assert_eq!(results_path(r, Path::new("/abs/dir"), exe), Path::new("results/abs/dir/bottom_left.json"));
+        assert_eq!(results_path(r, Path::new("./data/test/"), exe), Path::new("results/data/test/bottom_left.txt"));
+        assert_eq!(results_path(r, Path::new("/abs/dir"), exe), Path::new("results/abs/dir/bottom_left.txt"));
     }
 
     #[test]
