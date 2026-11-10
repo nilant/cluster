@@ -18,6 +18,27 @@ cp target/release/cluster ~/.local/bin/
 
 or `cargo install --path .` (installs into `~/.cargo/bin`).
 
+### macOS (Apple Silicon)
+
+Build on a Mac with Rust installed (rustup); `ssh` and `scp` are already part of macOS:
+
+```
+cargo build --release          # binary: target/release/cluster
+mkdir -p ~/.local/bin && cp target/release/cluster ~/.local/bin/
+```
+
+Make sure `~/.local/bin` is on your `PATH`.
+
+### Prebuilt binaries
+
+The GitHub Actions workflow (`.github/workflows/build.yml`) builds Linux x86_64 and macOS Apple Silicon binaries on every push. Download them from the run's artifacts, or, for a tagged release, from the Releases page:
+
+```
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+On macOS, a downloaded binary may be blocked by Gatekeeper; remove the quarantine flag with `xattr -d com.apple.quarantine cluster`.
+
 ## Hosts file
 
 One IP address (IPv4 or IPv6) per line. Blank lines and lines starting with `#` are ignored.
