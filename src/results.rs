@@ -1,26 +1,41 @@
 use anyhow::Result;
-use std::{fs, fs::File, io::Write, path::Path};
+use std::{fs, io::Write, path::PathBuf};
 
-/// Results file: one `# <instance>` header per run, followed by the run's standard output.
-/// Append-only, so it is complete up to the last finished run even if the program is aborted.
-pub struct Writer(File);
+/// Raw stdout of the runs: appended to `<exe>.sol`, or, when split, one `<exe>/<instance>.sol` file per run.
+pub struct Sol {
+    path: PathBuf,
+    split: bool,
+}
 
-impl Writer {
-    /// Creates (or truncates) the file; with `append`, adds to the end of an existing one.
-    pub fn open(path: &Path, append: bool) -> Result<Self> {
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
+impl Sol {
+    /// `path` is the `<exe>` path without extension. Unless `append`, the single file is truncated;
+    /// the split directory is only created (a file is replaced when its instance runs again).
+    pub fn open(path: PathBuf, split: bool, append: bool) -> Result<Self> {
+        let s = Self { path, split };
+        match s.path.parent() {
+            _ if split => fs::create_dir_all(&s.path)?,
+            Some(dir) => fs::create_dir_all(dir)?,
+            None => {}
         }
-        let file = fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(path)?;
-        Ok(Self(file))
+        if !split && !append {
+            fs::write(s.file(""), "")?;
+        }
+        Ok(s)
     }
 
-    /// Records one run. `stdout` is written as is, with a newline after it (nothing if it is empty).
-    pub fn add(&mut self, instance: &str, stdout: &str) -> Result<()> {
-        let sep = if stdout.is_empty() { "" } else { "\n" };
-        // one write per block, so blocks never interleave
-        self.0.write_all(format!("# {instance}\n{stdout}{sep}").as_bytes())?;
-        Ok(self.0.flush()?)
+    /// Where the output goes: the single file, or the directory when split.
+    pub fn location(&self) -> PathBuf {
+        if self.split { self.path.clone() } else { self.file("") }
+    }
+
+    fn file(&self, instance: &str) -> PathBuf {
+        if self.split { self.path.join(format!("{instance}.sol")) } else { self.path.with_added_extension("sol") }
+    }
+
+    pub fn add(&self, instance: &str, stdout: &[u8]) -> Result<()> {
+        let file = self.file(instance);
+        let opts = fs::OpenOptions::new().create(true).write(true).append(!self.split).truncate(self.split).clone();
+        Ok(opts.open(file)?.write_all(stdout)?)
     }
 }
 
@@ -28,31 +43,23 @@ impl Writer {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("cl-{}-{name}.txt", std::process::id()))
-    }
-
     #[test]
-    fn block_format() {
-        let p = tmp("fmt");
-        let mut w = Writer::open(&p, false).unwrap();
-        w.add("inst_1", r#"{"obj":94.0,"runtime":0.000023975}"#).unwrap();
-        w.add("inst_2", "iteration 1: 120\n  indented\ndone").unwrap();
-        w.add("inst_3", "").unwrap();
-        w.add("inst_4", "last").unwrap();
-        let want = "# inst_1\n{\"obj\":94.0,\"runtime\":0.000023975}\n# inst_2\niteration 1: 120\n  indented\ndone\n# inst_3\n# inst_4\nlast\n";
-        assert_eq!(fs::read_to_string(&p).unwrap(), want);
-        let _ = fs::remove_file(p);
-    }
-
-    #[test]
-    fn append_keeps_earlier_content_and_default_truncates() {
-        let p = tmp("app");
-        Writer::open(&p, false).unwrap().add("a", "1").unwrap();
-        Writer::open(&p, true).unwrap().add("b", "2").unwrap();
-        assert_eq!(fs::read_to_string(&p).unwrap(), "# a\n1\n# b\n2\n");
-        Writer::open(&p, false).unwrap().add("c", "3").unwrap();
-        assert_eq!(fs::read_to_string(&p).unwrap(), "# c\n3\n");
-        let _ = fs::remove_file(p);
+    fn sol_single_and_split() {
+        let d = std::env::temp_dir().join(format!("cl-{}-sol", std::process::id()));
+        let single = Sol::open(d.join("algo"), false, false).unwrap();
+        single.add("a", b"1\n").unwrap();
+        single.add("b", b"2\n").unwrap();
+        assert_eq!(fs::read_to_string(d.join("algo.sol")).unwrap(), "1\n2\n");
+        Sol::open(d.join("algo"), false, true).unwrap().add("c", b"3\n").unwrap();
+        assert_eq!(fs::read_to_string(d.join("algo.sol")).unwrap(), "1\n2\n3\n");
+        assert_eq!(
+            fs::read_to_string(Sol::open(d.join("algo"), false, false).map(|_| d.join("algo.sol")).unwrap()).unwrap(),
+            ""
+        );
+        let split = Sol::open(d.join("algo"), true, false).unwrap();
+        split.add("a", b"old").unwrap();
+        split.add("a", b"new").unwrap();
+        assert_eq!(fs::read_to_string(d.join("algo/a.sol")).unwrap(), "new");
+        let _ = fs::remove_dir_all(d);
     }
 }

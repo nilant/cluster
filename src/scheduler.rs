@@ -1,4 +1,4 @@
-use crate::{Args, hosts::Ssh, hosts::Status, results::Writer};
+use crate::{Args, hosts::Ssh, hosts::Status, results::Sol};
 use anyhow::{Context, Result, bail};
 use std::collections::{HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
@@ -22,7 +22,7 @@ struct Shared {
     flags: String,
     remote_dir: String,
     queue: Mutex<VecDeque<PathBuf>>,
-    writer: Mutex<Writer>,
+    sol: Mutex<Sol>,
 }
 
 /// A batch run: one worker per host, each pulling the next instance from a shared queue.
@@ -52,9 +52,11 @@ impl Job {
         let queue = list_instances(&dir)?;
         let results = results_path(&args.results_dir, &dir, &exe);
         let total = queue.len();
+        let sol = Sol::open(results, args.split_output, args.append)?;
+        let results = sol.location();
         let shared = Arc::new(Shared {
             ssh: Ssh::new(args.user.as_deref()),
-            writer: Mutex::new(Writer::open(&results, args.append)?),
+            sol: Mutex::new(sol),
             flags: flags.trim().into(),
             remote_dir: format!("/tmp/cluster-{}", std::process::id()),
             queue: Mutex::new(queue),
@@ -84,11 +86,11 @@ impl Job {
     }
 }
 
-/// `<base>/<instances dir>/<exe>.txt`, keeping only plain path components (no `/`, `.` or `..`).
+/// `<base>/<instances dir>/<exe>`, keeping only plain path components (no `/`, `.` or `..`).
 fn results_path(base: &Path, dir: &Path, exe: &Path) -> PathBuf {
     let mut p = base.to_path_buf();
     p.extend(dir.components().filter(|c| matches!(c, Component::Normal(_))));
-    p.join(format!("{}.txt", file_name(exe)))
+    p.join(file_name(exe))
 }
 
 fn expand_home(s: &str) -> PathBuf {
@@ -102,12 +104,12 @@ fn file_name(p: &Path) -> String {
     p.file_name().unwrap_or_default().to_string_lossy().into_owned()
 }
 
-/// Name of an instance in the results file: the file name without its extension.
+/// Name of an instance in the output file names: the file name without its extension.
 fn instance_key(p: &Path) -> String {
     p.file_stem().unwrap_or_default().to_string_lossy().into_owned()
 }
 
-/// Regular, non-hidden files directly in `dir`, sorted, with distinct keys.
+/// Regular, non-hidden files directly in `dir`, sorted, with distinct names in the output file names.
 fn list_instances(dir: &Path) -> Result<VecDeque<PathBuf>> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .with_context(|| format!("instances directory {}", dir.display()))?
@@ -159,7 +161,7 @@ async fn run_one(sh: &Shared, i: usize, host: &str, path: &Path, tx: &UnboundedS
     let (dir, flags) = (sq(&sh.remote_dir), &sh.flags);
     let cmd = format!("cd {dir} && ./{} {flags} {}; c=$?; rm -f {}; exit $c", sq(&exe), sq(&name), sq(&remote));
     let out = sh.ssh.run(host, &cmd).await?;
-    sh.writer.lock().unwrap().add(&instance_key(path), String::from_utf8_lossy(&out.stdout).trim_end())?;
+    sh.sol.lock().unwrap().add(&instance_key(path), &out.stdout)?;
     let _ = tx.send(Ev::Done(out.status.code().unwrap_or(-1)));
     Ok(())
 }
@@ -183,12 +185,12 @@ mod tests {
         assert_eq!(instance_key(Path::new("d/a.tar.gz")), "a.tar");
         assert_eq!(instance_key(Path::new("d/noext")), "noext");
         let (r, exe) = (Path::new("results"), Path::new("/x/bottom_left"));
-        assert_eq!(results_path(r, Path::new("./data/test/"), exe), Path::new("results/data/test/bottom_left.txt"));
-        assert_eq!(results_path(r, Path::new("/abs/dir"), exe), Path::new("results/abs/dir/bottom_left.txt"));
+        assert_eq!(results_path(r, Path::new("./data/test/"), exe), Path::new("results/data/test/bottom_left"));
+        assert_eq!(results_path(r, Path::new("/abs/dir"), exe), Path::new("results/abs/dir/bottom_left"));
     }
 
     #[test]
-    fn instances_sorted_hidden_skipped_keys_distinct() {
+    fn instances_sorted_hidden_skipped_names_distinct() {
         let d = std::env::temp_dir().join(format!("cl-inst-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         assert!(list_instances(&d).is_err(), "empty directory");

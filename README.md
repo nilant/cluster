@@ -2,7 +2,7 @@
 
 A terminal UI that runs a batch of problem instances on a set of idle machines over ssh.
 
-It shows which hosts are busy or idle, lets you pick a subset of the idle ones, and runs a command on every file of an instances directory. Each selected host runs one instance at a time; as soon as a run ends, the host gets the next file, until all instances are done. The standard output of every run is collected in one text file.
+It shows which hosts are busy or idle, lets you pick a subset of the idle ones, and runs a command on every file of an instances directory. Each selected host runs one instance at a time; as soon as a run ends, the host gets the next file, until all instances are done. The standard output of each run is saved in `.sol` files.
 
 ## Requirements
 
@@ -36,7 +36,7 @@ By default `./hosts.txt` is used. If it is missing and `--hosts` is not given, t
 ## Usage
 
 ```
-cluster [--hosts FILE] [--user USER] [--idle-threshold LOAD] [--append] [--results-dir DIR]
+cluster [--hosts FILE] [--user USER] [--idle-threshold LOAD] [--append] [--split-output] [--results-dir DIR]
 ```
 
 | Option | Default | Meaning |
@@ -44,7 +44,8 @@ cluster [--hosts FILE] [--user USER] [--idle-threshold LOAD] [--append] [--resul
 | `--hosts FILE` | `./hosts.txt` | File with the host addresses |
 | `--user USER` | from `~/.ssh/config`, else current user | ssh user |
 | `--idle-threshold LOAD` | `0.5` | A host is idle if its 1-minute load average is below this value. The load average is not divided by the number of cores, so `0.5` means one core is less than 50% busy |
-| `--append` | off (overwrite) | Add to the end of an existing results file instead of overwriting it |
+| `--append` | off (overwrite) | Append to an existing `<exe>.sol` instead of emptying it |
+| `--split-output` | off | Save the stdout of each run in its own file (see Results) |
 | `--results-dir DIR` | `results` | Base directory for results |
 
 ### In the interface
@@ -80,31 +81,17 @@ Host states: `IDLE`, `BUSY`, `DOWN` (unreachable, cannot be selected), and, duri
 
 ## Results
 
-Results are written to
+The standard output of every run is saved under
 
 ```
-<results-dir>/<instances path>/<exe>.txt
+<results-dir>/<instances path>/
 ```
 
-where `<instances path>` is the instances directory as typed (only normal path components are kept, so `./`, `..` and a leading `/` are dropped) and `<exe>` is the file name of the executable. For example, instances in `data/test` and the executable `./bottom_left` give `results/data/test/bottom_left.txt`.
+where `<instances path>` is the instances directory as typed (only normal path components are kept, so `./`, `..` and a leading `/` are dropped) and `<exe>` is the file name of the executable. For example, instances in `data/test` and the executable `./bottom_left` use `results/data/test/`.
 
-Each finished run adds a block: a `# <instance>` header line followed by the standard output of the command, exactly as it printed it:
-
-```
-# 012379a0-f981-4053-9144-29d2d31ae611
-{"obj":94.0,"bound":49.0,"runtime":0.000023975}
-# 3f1c2b7e-0d5a-4f55-8a31-9c2b1d7e4a10
-iteration 1: 120
-iteration 2: 97
-done
-```
-
-- `<instance>` is the file name without its extension (`012379a0.txt` becomes `012379a0`; only the last extension is removed). If two instances would get the same name once the extension is removed (for example `a.txt` and `a.json`), the run does not start and the error names the clashing name.
-- Blocks appear in the order the runs finish. The file is only ever added to, so it is complete up to the last finished run even if you abort.
-- A run that exits non-zero still gets its block, with whatever it printed before. An instance with no output has just its header line.
+- **Default:** all outputs are appended, in the order the runs finish, to `<exe>.sol` (`results/data/test/bottom_left.sol`). The file is emptied at the start unless `--append` is given.
+- **With `--split-output`:** a directory `<exe>/` is created with one file per run, `<instance name>.sol`, holding that run's stdout. The instance name is the file name without its extension (`012379a0.txt` becomes `012379a0.sol`); a file is replaced when its instance runs again. If two instances would get the same name once the extension is removed (for example `a.txt` and `a.json`), the run does not start and the error names the clashing name.
 - stderr, exit codes, hosts and timing are not stored.
-- The file is overwritten on each run unless `--append` is given. With `--append` new blocks go after the existing content, so an instance that is run again appears twice.
-- The format cannot tell a header from an output line that itself starts with `# `.
 
 ## Development
 

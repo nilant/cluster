@@ -18,9 +18,12 @@ pub struct Args {
     /// A host is idle if its 1-minute load average is below this value (0.5 = one core at 50%)
     #[arg(long, default_value_t = 0.5)]
     pub idle_threshold: f64,
-    /// Append to an existing results file instead of overwriting it
+    /// Append to an existing <exe>.sol file instead of emptying it
     #[arg(long)]
     pub append: bool,
+    /// Write the stdout of each run to its own file `<exe>/<instance>.sol` instead of appending all to `<exe>.sol`
+    #[arg(long)]
+    pub split_output: bool,
     /// Directory for result files
     #[arg(long, default_value = "results")]
     pub results_dir: PathBuf,
