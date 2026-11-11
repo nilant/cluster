@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::{fs, io::Write, path::PathBuf};
 
-/// Raw stdout of the runs: appended to `<exe>.sol`, or, when split, one `<exe>/<instance>.sol` file per run.
+/// Raw stdout of the runs: appended to `<exe>.jsonl`, or, when split, one `<exe>/<instance>.jsonl` file per run.
 pub struct Sol {
     path: PathBuf,
     split: bool,
@@ -29,7 +29,7 @@ impl Sol {
     }
 
     fn file(&self, instance: &str) -> PathBuf {
-        if self.split { self.path.join(format!("{instance}.sol")) } else { self.path.with_added_extension("sol") }
+        if self.split { self.path.join(format!("{instance}.jsonl")) } else { self.path.with_added_extension("jsonl") }
     }
 
     pub fn add(&self, instance: &str, stdout: &[u8]) -> Result<()> {
@@ -45,21 +45,21 @@ mod tests {
 
     #[test]
     fn sol_single_and_split() {
-        let d = std::env::temp_dir().join(format!("cl-{}-sol", std::process::id()));
+        let d = std::env::temp_dir().join(format!("cl-{}-jsonl", std::process::id()));
         let single = Sol::open(d.join("algo"), false, false).unwrap();
         single.add("a", b"1\n").unwrap();
         single.add("b", b"2\n").unwrap();
-        assert_eq!(fs::read_to_string(d.join("algo.sol")).unwrap(), "1\n2\n");
+        assert_eq!(fs::read_to_string(d.join("algo.jsonl")).unwrap(), "1\n2\n");
         Sol::open(d.join("algo"), false, true).unwrap().add("c", b"3\n").unwrap();
-        assert_eq!(fs::read_to_string(d.join("algo.sol")).unwrap(), "1\n2\n3\n");
+        assert_eq!(fs::read_to_string(d.join("algo.jsonl")).unwrap(), "1\n2\n3\n");
         assert_eq!(
-            fs::read_to_string(Sol::open(d.join("algo"), false, false).map(|_| d.join("algo.sol")).unwrap()).unwrap(),
+            fs::read_to_string(Sol::open(d.join("algo"), false, false).map(|_| d.join("algo.jsonl")).unwrap()).unwrap(),
             ""
         );
         let split = Sol::open(d.join("algo"), true, false).unwrap();
         split.add("a", b"old").unwrap();
         split.add("a", b"new").unwrap();
-        assert_eq!(fs::read_to_string(d.join("algo/a.sol")).unwrap(), "new");
+        assert_eq!(fs::read_to_string(d.join("algo/a.jsonl")).unwrap(), "new");
         let _ = fs::remove_dir_all(d);
     }
 }

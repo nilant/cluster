@@ -2,7 +2,7 @@
 
 A terminal UI that runs a batch of problem instances on a set of idle machines over ssh.
 
-It shows which hosts are busy or idle, lets you pick a subset of the idle ones, and runs a command on every file of an instances directory. Each selected host runs one instance at a time; as soon as a run ends, the host gets the next file, until all instances are done. The standard output of each run is saved in `.sol` files.
+It shows which hosts are busy or idle, lets you pick a subset of the idle ones, and runs a command on every file of an instances directory. Each selected host runs one instance at a time; as soon as a run ends, the host gets the next file, until all instances are done. The standard output of each run is saved in `.jsonl` files.
 
 ## Requirements
 
@@ -65,7 +65,7 @@ cluster [--hosts FILE] [--user USER] [--idle-threshold LOAD] [--append] [--split
 | `--hosts FILE` | `./hosts.txt` | File with the host addresses |
 | `--user USER` | from `~/.ssh/config`, else current user | ssh user |
 | `--idle-threshold LOAD` | `0.5` | A host is idle if its 1-minute load average is below this value. The load average is not divided by the number of cores, so `0.5` means one core is less than 50% busy |
-| `--append` | off (overwrite) | Append to an existing `<exe>.sol` instead of emptying it |
+| `--append` | off (overwrite) | Append to an existing `<exe>.jsonl` instead of emptying it |
 | `--split-output` | off | Save the stdout of each run in its own file (see Results) |
 | `--results-dir DIR` | `results` | Base directory for results |
 
@@ -110,8 +110,8 @@ The standard output of every run is saved under
 
 where `<instances path>` is the instances directory as typed (only normal path components are kept, so `./`, `..` and a leading `/` are dropped) and `<exe>` is the file name of the executable. For example, instances in `data/test` and the executable `./bottom_left` use `results/data/test/`.
 
-- **Default:** all outputs are appended, in the order the runs finish, to `<exe>.sol` (`results/data/test/bottom_left.sol`). The file is emptied at the start unless `--append` is given.
-- **With `--split-output`:** a directory `<exe>/` is created with one file per run, `<instance name>.sol`, holding that run's stdout. The instance name is the file name without its extension (`012379a0.txt` becomes `012379a0.sol`); a file is replaced when its instance runs again. If two instances would get the same name once the extension is removed (for example `a.txt` and `a.json`), the run does not start and the error names the clashing name.
+- **Default:** all outputs are appended, in the order the runs finish, to `<exe>.jsonl` (`results/data/test/bottom_left.jsonl`). The file is emptied at the start unless `--append` is given.
+- **With `--split-output`:** a directory `<exe>/` is created with one file per run, `<instance name>.jsonl`, holding that run's stdout. The instance name is the file name without its extension (`012379a0.txt` becomes `012379a0.jsonl`); a file is replaced when its instance runs again. If two instances would get the same name once the extension is removed (for example `a.txt` and `a.json`), the run does not start and the error names the clashing name.
 - stderr, exit codes, hosts and timing are not stored.
 
 ## Development
